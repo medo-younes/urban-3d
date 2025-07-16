@@ -1,0 +1,15 @@
+{
+    "pipeline":
+            [
+
+                {
+                    "type" : "readers.las",
+                    "filename" : "https://canelevation-lidar-point-clouds.s3.ca-central-1.amazonaws.com/pointclouds_nuagespoints/VILLE_OTTAWA/Ottawa_Gatineau_2020/3665032.copc.laz"
+                },
+                {
+                    "type" : "writers.las",
+                    "filename" : "out.copc.las"
+                }
+
+            ]
+}
