@@ -41,7 +41,7 @@ try:
 except ImportError as e:
     print(f"C++ implementation not available: {e}")
     try:
-        from cut_pursuit_L0 import perform_cut_pursuit
+        from urban3d.treeiso.cut_pursuit_L0 import perform_cut_pursuit
         USE_CPP = False
         print("Using Python implementation of Cut-Pursuit (slower)")
     except ImportError as e:

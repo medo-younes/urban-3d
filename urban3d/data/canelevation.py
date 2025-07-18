@@ -20,11 +20,13 @@ The reference system used for all point clouds in the product is NAD83(CSRS), ep
 ## Import Libraries
 import geopandas as gpd
 import os
-import arcpy
 from pathlib import Path
 import boto3
 import re
 from datetime import datetime
+import pdal 
+import json
+
 
 # S3 Bucket Name
 BUCKET_NAME = 'canelevation-lidar-point-clouds'
@@ -35,14 +37,14 @@ def download_s3(bucket_name, url, out_dir):
 
     url_path = Path(url)
     object_name = '/'.join(url_path.parts[2:])
-    file_name = url_path.name
+    file_name = url_path.name.replace('.copc', '')
     out_path = f'{out_dir}/{file_name}'
 
     if os.path.exists(out_path):
-        arcpy.AddMessage(f'-ALREADY EXISTS: {file_name}')
+        print(f'-ALREADY EXISTS: {file_name}')
     else:
         s3.download_file(bucket_name, object_name, out_path)
-        arcpy.AddMessage(f'-DOWNLOADED: {file_name}')
+        print(f'-DOWNLOADED: {file_name}')
 
 
 def get_matching_urls(tile_index_fp, gdb, layer):    
@@ -51,7 +53,7 @@ def get_matching_urls(tile_index_fp, gdb, layer):
 
     # Read Tiles ShapeFile as GeoDataFrame
     tile_index_gdf = gpd.read_file(tile_index_fp, bbox = bbox_gdf, engine ='fiona')
-    arcpy.AddMessage(str(len(tile_index_gdf)))
+    print(str(len(tile_index_gdf)))
     tile_index_gdf['year'] = tile_index_gdf.Project.apply(lambda st: max(re.findall(r'\d+' ,st))).astype(int)
     latest_year = tile_index_gdf.year.astype(int).max()
     tiles_gdf_latest = tile_index_gdf[tile_index_gdf.year == latest_year]
@@ -62,7 +64,7 @@ def get_matching_urls(tile_index_fp, gdb, layer):
 
     # Spatial join to find only matching tiles
     matching_urls = tiles_gdf_latest.URL.to_list()
-    arcpy.AddMessage(f'Found {len(matching_urls)} Matching LAZ Files within Bounds for {latest_year}')
+    print(f'Found {len(matching_urls)} Matching LAZ Files within Bounds for {latest_year}')
     print(f'PROJECT ID: {project_id}')
     return matching_urls, project_id, latest_year
 
@@ -77,25 +79,35 @@ def download_laz_files(matching_urls, laz_dir):
             out_dir = laz_dir
         )
 
-def batch_laz_to_las(laz_dir, las_dir):
-    ## Convert LAZ to LAS
-    laz_fps = [f'{laz_dir}/{laz_fp}' for laz_fp in os.listdir(laz_dir)]
-    for laz_fp in laz_fps:
-        arcpy.conversion.ConvertLas(
-                    in_las = laz_fp,
-                    target_folder = las_dir,        
-        )
-        arcpy.AddMessage(f'- Successfully converted: {laz_fp.split("/")[-1]}')
+        
 
+## Download LAZ Files 
+def pdal_download_s3(matching_urls, out_dir, wkt):
+    ## Download Matching LAZ Files from NRCAN S3 Bucket
+    pipeline_fp = os.path.join(out_dir ,'download.json')
+    url1 = Path(matching_urls[0])
+    print(f'DOWNLOADING FROM PATH: {url1.parent}')
+    print('=============================================================')
+    n = 1
+    pipeline = list()
+    for url in matching_urls:
+        # print(url)
+        url_path = Path(url)
+        file_name = url.split('/')[-1].replace('.copc', '')
+        out_fp = os.path.join(out_dir, file_name).replace('\\', '/')
 
-def create_las_pyramid(las_dir, output_las_fp):
-    # Setup Out File Name based on LAS file name
-    las_name = os.listdir(las_dir)[0].split('_')[1]
+        # arcpy.AddMessage(out_fp)
+        pipeline.extend([{"type" : "readers.las", "filename" : url}])
+        
+    # pipeline.append({"type" : "filters.merge"})
+    pipeline.append({"type" :"writers.las", "filename": out_fp})
 
-    # Create LAS Dataset
-    arcpy.management.CreateLasDataset(las_dir,output_las_fp)
-    arcpy.AddMessage(f'- LAS Dataset Created: {output_las_fp}')
+    pipeline = dict(pipeline = pipeline)
+    # print('DOWNLOADING NOW')
 
-    # Create LAS Dataset Pyramid
-    arcpy.management.BuildLasDatasetPyramid(output_las_fp)
-    arcpy.AddMessage(f'- LAS Dataset Pyramid Created: {output_las_fp}')
+    with open(pipeline_fp, 'w') as f:
+        json.dump(pipeline, f)
+    # subprocess.run(['pdal', 'pipeline', pipeline_fp])
+
+    pipeline = pdal.Pipeline(json.dumps(pipeline))
+    pipeline.execute()

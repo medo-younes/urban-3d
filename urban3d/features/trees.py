@@ -1,3 +1,9 @@
+import sys
+import os
+
+
+
+
 import pdal
 import json
 import os
@@ -7,30 +13,35 @@ from treeiso.treeiso import process_las_file
 from glob import glob
 from pathlib import Path
 import pandas as pd
+import numpy as np
+import pandas as pd
+from sklearn.cluster import KMeans
+from urban3d.pc.ops import run_pdal_pipeline
 
 COUNT_LIMIT = 800000
 
-def get_las_paths(in_folder, out_folder, out_extension=None):
+# def get_las_paths(in_folder, out_folder, out_extension=None):
     
-    # Input File Paths
-    in_files = os.listdir(in_folder)
-    in_las_paths = glob(os.path.join(in_folder, "*.la[sz]"))
-    in_las_sffx = [''.join(Path(in_las).suffixes) for in_las in in_las_paths]
+#     # Input File Paths
+#     in_files = os.listdir(in_folder)
+#     in_las_paths = glob(os.path.join(in_folder, "*.la[sz]"))
+#     in_las_sffx = [''.join(Path(in_las).suffixes) for in_las in in_las_paths]
 
-    # Output File Paths
-    out_files = [file.replace(suffix,f'{suffix if out_extension is None else f'{out_extension}{suffix}'}') for file, suffix in zip(in_files, in_las_sffx)]
-    out_las_paths = [os.path.join(out_folder, file) for file in out_files]
+#     # Output File Paths
+#     out_files = [file.replace(suffix,f'{suffix if out_extension is None else f'{out_extension}{suffix}'}') for file, suffix in zip(in_files, in_las_sffx)]
+#     out_las_paths = [os.path.join(out_folder, file) for file in out_files]
 
-    return in_las_paths, out_las_paths
+#     return in_las_paths, out_las_paths
 
 
-
-def pdal_tree_filter(in_las, out_folder, count_limit, k = 8):
+def pdal_tree_filter(in_las, out_folder, count_limit,run = False):
     fp = Path(in_las)
     suffix =  ''.join(fp.suffixes)
-    out_file = str(fp.name).replace(suffix, f'_filtered_#{suffix}')
 
-    pp= dict(
+    
+    out_file = str(fp.name).replace(suffix, f'_filtered_#.laz')
+
+    pipeline_dict = dict(
         pipeline = [
                 {
                     "type" : "readers.las",
@@ -50,11 +61,10 @@ def pdal_tree_filter(in_las, out_folder, count_limit, k = 8):
                 },
                 {
                     "type" : "filters.expression",
-                    "expression" : "Classification != 2"
+                    "expression" : "Classification != 2 && (HeightAboveGround < 40 && HeightAboveGround > 0)"
                 },
                 {
                     "type" : "filters.neighborclassifier",
-
                     "k" : 16,
                 },
                 {
@@ -94,7 +104,7 @@ def pdal_tree_filter(in_las, out_folder, count_limit, k = 8):
                 },
                 {
                     "type" : "filters.expression",
-                    "expression" : "HeightAboveGround>2 && Classification != 7",
+                    "expression" : "Classification != 7",
                 },
                 {
                     "type" : "filters.chipper",
@@ -112,15 +122,14 @@ def pdal_tree_filter(in_las, out_folder, count_limit, k = 8):
         }
     )
 
-    return pdal.Pipeline(json.dumps(pp))
+    run_pdal_pipeline(pipeline_dict)
+
+    if run:
+        pp.execute()
+    else:
+        return pp
 
 
-
-def batch_filter_by_hag(in_folder, out_folder, multiplier):
-    in_las_paths, out_las_paths = get_las_paths(in_folder, out_folder, out_extension="")
-
-    for in_las, out_las in zip(in_las_paths, out_las_paths):
-        filter_by_hag(in_las, out_las, multiplier)
 
 # Filter Points by Height Above Ground
 def filter_by_hag(in_las, out_las, multiplier):
@@ -137,11 +146,57 @@ def filter_by_hag(in_las, out_las, multiplier):
 
 
 
-def isolate_trees_from_chips(in_folder, out_folder):
-    in_las_paths, out_las_paths = get_las_paths(in_folder, out_folder, out_extension="_treeiso")
+def initial_filter(filtered_paths, cleaned_paths):
+    for in_las, out_las in zip(filtered_paths, cleaned_paths):
+        if os.path.exists(out_las) == False:
+            las = laspy.read(in_las)
+            dimensions = ['X', 'Y', 'Z', 'ClusterID','intensity', 'number_of_returns', 'Curvature', ]
 
-    for in_las, out_las in zip(in_las_paths, out_las_paths):
-        process_las_file(in_las, out_las = out_las)
+            # ## Filter by Cluster ID
+            df = build_las_df(las, dimensions, rescale=True)
+            cluster_id = select_tree_cluster(df)
+            las = las[las.ClusterID == cluster_id]
+
+            
+            # # ## Filter By Height Above Ground
+            hag = las.HeightAboveGround
+            # q = np.percentile(hag, q = 0.99)
+            hag_mask = hag < 40
+            las = las[hag_mask]
+
+            # ## Write LAS
+            las.write(out_las)
+        else:
+            print(f'- Exists: {out_las}')
+
+
+def isolate_trees(cleaned_paths, classified_paths):
+    for in_las, out_las in zip(cleaned_paths, classified_paths):
+        if os.path.exists(out_las) == False:
+            # ## Isolate Trees
+            process_las_file(in_las, out_las, if_isolate_outlier=False)
+
+            ## Second Kmeans Pass to filter out Trees from Tree ISO Segments
+            las = laspy.read(out_las)
+            dimensions = ['X', 'Y', 'Z', 'final_segs','intensity', 'number_of_returns', 'Curvature',  ]
+            df = build_las_df(las, dimensions, rescale=True)
+            df['final_segs'] = las.final_segs
+            df_mean = df.groupby('final_segs').mean().reset_index()
+            df_mean['count'] = df.groupby('final_segs').X.count()
+
+            kmeans = KMeans(n_clusters= 2)
+            df_mean['ClusterID'] = kmeans.fit_predict(df_mean[['Curvature', 'intensity']])
+            df_mean = df_mean[df_mean.ClusterID == select_tree_cluster(df_mean)]
+
+            q_lower =  df_mean['count'].quantile(q=0.3)
+            q_upper =  df_mean['count'].quantile(q=0.99)
+            df_mean = df_mean[(df_mean['count'] > q_lower) & (df_mean['count'] < q_upper)] 
+
+            ## Out put Cleaned Las with Trees
+            las_clean = las[df.final_segs.isin(df_mean.final_segs).values]
+            las_clean.write(out_las)
+        else:
+            print(f'- Exists: {out_las}')
 
 
 
@@ -155,7 +210,7 @@ def build_las_df(las, dimensions, rescale = False):
     else:
         return df
 
-def select_cluster(df):
+def select_tree_cluster(df):
     df_mean = df.groupby('ClusterID').mean().T
 
     # Cluster with Lowest Intensity
@@ -168,6 +223,6 @@ def select_cluster(df):
     cr = 0 if df_mean[0].Curvature > df_mean[1].Curvature else 1
 
 
-    votes =[it, nr, cr]
+    votes = [it, nr, cr]
 
     return max(set(votes), key=votes.count)
