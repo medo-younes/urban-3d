@@ -28,16 +28,15 @@ import pdal
 import json
 
 
-# S3 Bucket Name
-BUCKET_NAME = 'canelevation-lidar-point-clouds'
-s3 = boto3.client('s3') # Define Boto3 client
+
 
 ## FUNCTIONS
 def download_s3(bucket_name, url, out_dir):
-
+    # Boto3 AWS S3 Client
+    s3 = boto3.client('s3') # Define Boto3 client
     url_path = Path(url)
     object_name = '/'.join(url_path.parts[2:])
-    file_name = url_path.name.replace('.copc', '')
+    file_name = url_path.name
     out_path = f'{out_dir}/{file_name}'
 
     if os.path.exists(out_path):
@@ -70,11 +69,11 @@ def get_matching_urls(tile_index_fp, gdb, layer):
 
 
 ## Download LAZ Files 
-def download_laz_files(matching_urls, laz_dir):
+def download_laz_files(bucket_name, matching_urls, laz_dir):
     ## Download Matching LAZ Files from NRCAN S3 Bucket
     for url in matching_urls:
         download_s3(
-            bucket_name = BUCKET_NAME,
+            bucket_name = bucket_name,
             url = url,
             out_dir = laz_dir
         )

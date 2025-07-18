@@ -1,15 +1,10 @@
 import sys
+sys.path.append(r"D:\05_Projects\01_Active\Toronto Digital Twin\urban-3d")
+
 import os
-
-
-
-
-import pdal
-import json
 import os
 import laspy
 import numpy as np
-from treeiso.treeiso import process_las_file
 from glob import glob
 from pathlib import Path
 import pandas as pd
@@ -17,7 +12,9 @@ import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
 from urban3d.pc.ops import run_pdal_pipeline
-
+from urban3d.features.treeiso.treeiso import process_las_file
+import json
+import pdal
 COUNT_LIMIT = 800000
 
 # def get_las_paths(in_folder, out_folder, out_extension=None):
@@ -34,12 +31,12 @@ COUNT_LIMIT = 800000
 #     return in_las_paths, out_las_paths
 
 
-def pdal_tree_filter(in_las, out_folder, count_limit,run = False):
+def pdal_tree_filter(in_las, out_folder, count_limit):
     fp = Path(in_las)
     suffix =  ''.join(fp.suffixes)
 
-    
-    out_file = str(fp.name).replace(suffix, f'_filtered_#.laz')
+    in_las_name = in_las.split('/')[-1]
+    out_file = in_las_name.replace(suffix, f'_filtered_#.laz')
 
     pipeline_dict = dict(
         pipeline = [
@@ -117,17 +114,17 @@ def pdal_tree_filter(in_las, out_folder, count_limit,run = False):
                 },
                 
         ],
-        options = {
-            "threads": 8
-        }
+    
     )
+    
+    print(pipeline_dict)
+    # Run PDAL Pipeline
+    pipeline_json = json.dumps(pipeline_dict)
+    pdal_pipeline = pdal.Pipeline(pipeline_json)
+    print('Running Pipeline')
+    pdal_pipeline.execute()
 
-    run_pdal_pipeline(pipeline_dict)
-
-    if run:
-        pp.execute()
-    else:
-        return pp
+    
 
 
 

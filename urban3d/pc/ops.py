@@ -3,7 +3,8 @@
 POINT CLOUD OPERATIONS
 
 '''
-
+import sys
+sys.path.append(r"D:\05_Projects\01_Active\Toronto Digital Twin\urban-3d")
 import pdal 
 import json
 import os
@@ -28,12 +29,11 @@ def pdal_merge(in_las, out_merged):
 
 
 
-def clip_laz_files(laz_dir, wkt, merge = False):
+def clip_laz_files(laz_dir, wkt, merge = False, merged_fp=None):
     laz_fps = [f'{laz_dir}/{laz_fp}' for laz_fp in os.listdir(laz_dir)]
     pipeline = list()
     
-    if merge:
-        merged_fp = os.path.join(laz_dir, f'merged.las')
+    if merge and os.path.exists(merged_fp) == False:
         for laz_fp in laz_fps:
             pipeline.extend([{"type" : "readers.las", "filename" : laz_fp}, 
                             {"type" : "filters.crop", "polygon" : wkt}])

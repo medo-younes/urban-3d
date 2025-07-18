@@ -4,6 +4,9 @@
 import sys
 import os
 
+import sys
+sys.path.append(r"D:\05_Projects\01_Active\Toronto Digital Twin\urban-3d\urban3d\features\treeiso")
+
 # Add library path
 lib_path = os.path.join(os.path.dirname(__file__), '..', 'urban3d')
 sys.path.insert(0, lib_path)
@@ -16,8 +19,12 @@ import re
 import pdal
 import json
 import shapely
+from urban3d import config
+import importlib
+import urban3d
+from urban3d.config import DATA
 
-import config
+
 # Path to the ArcGIS Pro project
 aprx = arcpy.mp.ArcGISProject("CURRENT")
 gdb = aprx.defaultGeodatabase
@@ -28,12 +35,11 @@ scenes = [mp for mp in aprx.listMaps() if mp.mapType == 'SCENE']
 scene_names = [scene.name for scene in scenes]
 
 # Setup Working Directory
-cwd = Path(aprx.filePath).parent
-os.chdir(cwd)
+parent_folder = Path(aprx.filePath).parent
+tool_folder = os.path.join(parent_folder, "urban-3d")
+os.chdir(tool_folder)
 
 file_ext ='.copc.laz'
-
-
 
 
 
@@ -99,13 +105,10 @@ class Toolbox:
         self.label = "Toolbox"
         self.alias = "toolbox"
 
-        # Force refresh of modules
-        import importlib
-        import sys
+    
         
         # If you have helper modules, reload them
-        if 'urban3d' in sys.modules:
-            importlib.reload(sys.modules['urban3d'])
+        importlib.reload(urban3d)
         # List of tool classes associated with this toolbox
         
         self.tools = [DownloadLiDAR, IsolateTrees]
@@ -115,7 +118,7 @@ class Toolbox:
 class DownloadLiDAR:
     def __init__(self):
         """Define the tool (tool name is the name of the class)."""
-        self.label = "Download CanElevation LiDAR"
+        self.label = "Download 3D Point Clouds"
         self.description = '''
                 Download LiDAR 3D Point Clouds from: https://open.canada.ca/data/en/dataset/7069387e-9986-4297-9f55-0288e9676947
                 The LiDAR Point Clouds is a product that is part of the CanElevation Series created to support the National Elevation Data Strategy implemented by NRCan.
@@ -134,18 +137,25 @@ class DownloadLiDAR:
 
     def getParameterInfo(self):
         """Define the tool parameters."""
-
+        importlib.reload(urban3d)
         configure_map()
         params = [
             arcpy.Parameter(
-                displayName = "Input Region of Interest",
-                name = "project_name",
+                displayName = "Select Data Source",
+                name = "data_source",
                 datatype = "String",
                 parameterType="Required",
                 direction = "Input"
             ),
             arcpy.Parameter(
-                displayName = "Input Region of Interest",
+                displayName = "Project Name",
+                name = "project_name",
+                datatype = "String",
+                parameterType="Optional",
+                direction = "Input"
+            ),
+            arcpy.Parameter(
+                displayName = "Region of Interest",
                 name = "input_roi",
                 datatype = "GPFeatureLayer",
                 parameterType="Required",
@@ -159,7 +169,12 @@ class DownloadLiDAR:
                 direction = "Input"
             )
         ]
-        params[2].filter.type = 'ValueList'
+        
+        params[0].filter.type = 'ValueList'
+        params[3].filter.type = 'ValueList'
+
+        params[0].filter.list = config.S3_BUCKET_OPTIONS
+        params[3].filter.list  = scene_names
         
         return params
 
@@ -172,7 +187,7 @@ class DownloadLiDAR:
         validation is performed.  This method is called whenever a parameter
         has been changed."""
 
-        parameters[1].filter.list = scene_names
+        
 
         return
 
@@ -183,21 +198,32 @@ class DownloadLiDAR:
 
     def execute(self, parameters, messages):
         """The source code of the tool."""
-        
+        importlib.reload(urban3d)
         from urban3d.data.canelevation import download_laz_files
         from urban3d.pc.ops import clip_laz_files
-        from urban3d import config
         # Create Cirectory if Needed
         
-
-
-        
-        project_name = parameters[0].ValueAsText
-        input_roi = parameters[1].ValueAsText ## May have to retrieve database or path name in the future
-        scene_name = parameters[2].ValueAsText
+        ## Creae ROOT Data Directory if not found
+        if os.path.exists(DATA) == False:
+            os.mkdir(DATA)
    
 
-        RAW, LAZ,LAS, FILTERED, CLASSIFIED, MERGED = config.data_folder(project_name)
+        ## Retrieve Input Parameters
+        data_source = parameters[0].ValueAsText
+        project_name = parameters[1].ValueAsText
+        input_roi = parameters[2].ValueAsText ## May have to retrieve database or path name in the future
+        scene_name = parameters[3].ValueAsText
+        
+
+        if project_name is None:
+            project_name = input_roi
+
+        s3_bucket= config.S3_BUCKETS[data_source]
+
+        # Setup Directory Paths
+        RAW, LAZ,LAS, FILTERED, CLASSIFIED, MERGED = config.config_data_folder(project_name)
+        merged_fp = os.path.join(MERGED, f'{project_name}.las')
+        las_dataset_fp = os.path.join(MERGED , f'{project_name}.lasd')
 
 
         # Get AWS S3 Endpoints for overlapping point cloud tiles
@@ -211,44 +237,37 @@ class DownloadLiDAR:
         tile_index_gdf['year'] = tile_index_gdf.Project.apply(lambda st: max(re.findall(r'\d+' ,st))).astype(int)
         latest_year = tile_index_gdf.year.astype(int).max()
         tiles_gdf_latest = tile_index_gdf[tile_index_gdf.year == latest_year]
-
-        ## Get Name of Project
-        project_name = tiles_gdf_latest.Project.value_counts().reset_index().iloc[0].Project
         
         
         # Spatial join to find only matching tiles
         matching_urls = tiles_gdf_latest.URL.to_list()
         print(f'Found {len(matching_urls)} Matching LAZ Files within Bounds for {latest_year}')
-        print(f'PROJECT ID: {project_name}')
+        arcpy.AddMessage(f'PROJECT ID: {project_name}')
         arcpy.AddMessage(f'Found {len(matching_urls)} Matching LAZ Files within Bounds for {latest_year}')
 
 
-        # Setup Directory Paths
-        merged_fp = os.path.join(MERGED, f'{project_name}.las')
-
-
+    
         # Batch Download LAZ Files
         ## Download Matching LAZ Files from NRCAN S3 Bucket
-        # download.download_from_urls(matching_urls, output_path, bbox_wkt)
-        download_laz_files(matching_urls,LAZ)
+        # download_laz_files(s3_bucket, matching_urls,LAZ)
         arcpy.AddMessage('- CLIPPING AND MERGING; Outputting as LAS')
-        clip_laz_files(LAZ, bbox_wkt, merge = True)
+        clip_laz_files(LAZ, bbox_wkt, merge = True, merged_fp=merged_fp)
 
 
         # # Create LAS Dataset
-        output_las_ds_fp = os.path.join(LAS , f'{project_name}.lasd')
-        arcpy.management.CreateLasDataset(merged_fp,output_las_ds_fp)
-        arcpy.AddMessage(f'- LAS Dataset Created: {output_las_ds_fp}')
+        arcpy.management.CreateLasDataset(merged_fp,las_dataset_fp)
+        arcpy.AddMessage(f'- LAS Dataset Created: {las_dataset_fp}')
 
         # # Create LAS Dataset Pyramid
-        arcpy.management.BuildLasDatasetPyramid(output_las_ds_fp)
-        arcpy.AddMessage(f'- LAS Dataset Pyramid Created: {output_las_ds_fp}')
+        arcpy.management.BuildLasDatasetPyramid(las_dataset_fp)
+        arcpy.AddMessage(f'- LAS Dataset Pyramid Created: {las_dataset_fp}')
         
         # # Add LAS dataset to the scene
-        scene = aprx.listMaps(scene_name)[0]
-        if scene is not None:
-            scene.addDataFromPath(output_las_ds_fp)
-            arcpy.AddMessage(f'- LAS Dataset Pyramid Added to Scene: {output_las_ds_fp}')
+        # if scene_name is not None:
+        #     scene = aprx.listMaps(scene_name)[0]
+           
+        #     scene.addDataFromPath(las_dataset_fp)
+        #     arcpy.AddMessage(f'- LAS Dataset Pyramid Added to Scene: {las_dataset_fp}')
         return
 
     def postExecute(self, parameters):
@@ -270,8 +289,7 @@ class IsolateTrees:
 
     def getParameterInfo(self):
         """Define the tool parameters."""
-
-        configure_map()
+        importlib.reload(urban3d)
         params = [
             arcpy.Parameter(
                 displayName = "Input LAS Point Cloud",
@@ -297,8 +315,14 @@ class IsolateTrees:
         ]
         
         # Set the filter to only show LAS and LAZ files
-        params[0].filter.list = ['las', 'laz']
-        params[1].filter.type = 'ValueList'
+
+        # params[0].filter.type = 'ValueList'
+        # params[1].filter.type = 'ValueList'
+
+        # params[0].filter.list = ['las', 'laz']
+        # params[1].filter.type = 'ValueList'
+        params[-1].filter.type = 'ValueList'
+        params[-1].filter.list  = scene_names
         
     
 
@@ -314,18 +338,18 @@ class IsolateTrees:
         has been changed."""
 
         # Find all LAS/LAZ files in the project
-        las_files = []
+        # las_files = []
         
-        # Check all maps in the project
-        for map_obj in aprx.listMaps():
-            for layer in map_obj.listLayers():
-                if hasattr(layer, 'dataSource'):
-                    if layer.dataSource.lower().endswith(('.las', '.laz')):
-                        las_files.append(layer.dataSource)
+        # # Check all maps in the project
+        # for map_obj in aprx.listMaps():
+        #     for layer in map_obj.listLayers():
+        #         if hasattr(layer, 'dataSource'):
+        #             if layer.dataSource.lower().endswith(('.las', '.laz')):
+        #                 las_files.append(layer.dataSource)
         
-        # Set the filter list if files are found
-        if las_files:
-            parameters[0].filter.list = las_files
+        # # Set the filter list if files are found
+        # if las_files:
+        #     parameters[0].filter.list = las_files
 
         return
 
@@ -341,21 +365,24 @@ class IsolateTrees:
         # from urban3d.trees import initial_filter, isolate_trees
         from urban3d.features import trees
         from urban3d import config
+        from urban3d.pc.ops import pdal_merge
         
         in_las = parameters[0].ValueAsText
         out_folder = parameters[1].ValueAsText
+        scene_name = parameters[2].ValueAsText
+
         suffix =''.join(Path(in_las).suffixes)
         in_las_name = Path(in_las).name.replace(suffix,'')
 
-        RAW, LAZ,LAS, FILTERED, CLASSIFIED, MERGED = config.data_folder(out_folder)
+        RAW, LAZ,LAS, FILTERED, CLASSIFIED, MERGED = config.config_data_folder(out_folder)
         out_merged = os.path.join(MERGED, f'{in_las_name}_merged.las')
 
         arcpy.AddMessage(f'- Folder Configuration Complete: {out_folder}')
 
 
         ## Execute Tree Filtering Pipeline
-        if len(os.listdir(FILTERED)) ==0:
-            trees.pdal_tree_filter(in_las, FILTERED, count_limit=800000, run = True)
+        if len(os.listdir(FILTERED)) == 0:
+            trees.pdal_tree_filter(in_las, FILTERED, count_limit=800000)
             arcpy.AddMessage(f'- PDAL Pipeline Complete')
         else:
             arcpy.AddMessage(f'- Filtered Point Clouds Already Found, proceeding to Initial Filter')
@@ -372,16 +399,31 @@ class IsolateTrees:
 
         # # ## TREE ISOLATION AND FINAL K MEANS FILTER
         trees.isolate_trees(cleaned_las, classified_las)
-
         arcpy.AddMessage(out_merged)
+
         ## Merge Chipped Trees
         p = classified_las.copy()
-        # trees.pdal_merge(classified_las, out_merged)
-        p.extend([{"type": "filters.merge"}, {"type" : "writers.las", "filename" : out_merged}])
-        p = dict(pipeline = p)
-        p = pdal.Pipeline(json.dumps(p))
-        p.execute()
+        pdal_merge(classified_las, out_merged)
+        # p.extend([{"type": "filters.merge"}, {"type" : "writers.las", "filename" : out_merged}])
+        # p = dict(pipeline = p)
+        # p = pdal.Pipeline(json.dumps(p))
+        # p.execute()
         arcpy.AddMessage('- Merge Complete')
+
+        # Color ramp = Voxel Unique Values
+        # Create 3D scene and add LAS file
+        scene = aprx.listMaps(scene_name)[0]
+        las_layer = scene.addDataFromPath(out_merged)
+
+        #  # --- Example of how you might start modifying symbology (more complex) ---
+        # sym = las_layer.symbology
+        # sym.renderer
+
+        # Style by elevation (change to "INTENSITY" or "CLASSIFICATION" as needed)
+        # symbology = las_layer.symbology
+        # symbology.field = "USER_DATA"
+        # las_layer.symbology = symbology
+
 
         return
 
