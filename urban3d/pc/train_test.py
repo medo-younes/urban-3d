@@ -5,7 +5,7 @@ from sklearn.model_selection import train_test_split
 from shapely import wkt
 from config import *
 from shapely.geometry import box
-from geo import tiles_from_bbox,pdal_hexbin_gdf, pdal_get_crs
+# from geo import tiles_from_bbox,pdal_hexbin_gdf, pdal_get_crs
 import numpy as np
 
 

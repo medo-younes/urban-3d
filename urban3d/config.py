@@ -19,12 +19,16 @@ os.environ['OMP_NUM_THREADS'] = '3'
 ## DATA DIRECTORIES
 ROOT = "../"
 DATA = os.path.join(ROOT, 'PointCloudData/')
+TILE_INDEX_DIR = os.path.join(DATA, 'canelevation_tile_index')
+TILE_INDEX_FP = os.path.join(TILE_INDEX_DIR, 'Index_LiDARtiles_tuileslidar.shp')
 
 ## PROJECT ROOT DIRECTORIES
 PROJECT_ROOT = "../"
 MODELS = os.path.join(PROJECT_ROOT, "models")
 MEDIA = os.path.join(PROJECT_ROOT, "media")
 NOTEBOOKS = os.path.join(PROJECT_ROOT, "notebooks")
+URBAN3D = os.path.join(PROJECT_ROOT, "urban3d")
+
 
 
 def config_data_folder(project_name):

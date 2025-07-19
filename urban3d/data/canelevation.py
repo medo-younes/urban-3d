@@ -27,17 +27,24 @@ from datetime import datetime
 import pdal 
 import json
 
+from urllib.parse import urlparse
 
 
+def get_s3_objects_from_url(s3_url):
+    s3_url = urlparse(s3_url)
+    bucket_name = s3_url.netloc.lstrip('/').split('.')[0]
+    object_name = s3_url.path.lstrip('/')
+    return bucket_name, object_name
 
 ## FUNCTIONS
-def download_s3(bucket_name, url, out_dir):
+def download_s3(s3_url, out_dir):
     # Boto3 AWS S3 Client
     s3 = boto3.client('s3') # Define Boto3 client
-    url_path = Path(url)
-    object_name = '/'.join(url_path.parts[2:])
-    file_name = url_path.name
-    out_path = f'{out_dir}/{file_name}'
+
+    bucket_name, object_name = get_s3_objects_from_url(s3_url)
+
+    file_name = object_name.split('/')[-1].replace('.copc','')
+    out_path = os.path.join(out_dir, file_name)
 
     if os.path.exists(out_path):
         print(f'-ALREADY EXISTS: {file_name}')
@@ -46,13 +53,14 @@ def download_s3(bucket_name, url, out_dir):
         print(f'-DOWNLOADED: {file_name}')
 
 
-def get_matching_urls(tile_index_fp, gdb, layer):    
-    # Read Feature Class with GeoPandas
-    bbox_gdf = gpd.read_file(gdb, layer = layer).dissolve()
+def get_matching_urls(tile_index_fp, bbox_gdf):    
+    
+    if os.path.exists(tile_index_fp) == False:
+        retrieve_tile_index(tile_index_fp)
 
+    # Read Tiles GeoParquet as GeoDataFrame
+    tile_index_gdf = gpd.read_file(tile_index_fp, bbox=bbox_gdf)
     # Read Tiles ShapeFile as GeoDataFrame
-    tile_index_gdf = gpd.read_file(tile_index_fp, bbox = bbox_gdf, engine ='fiona')
-    print(str(len(tile_index_gdf)))
     tile_index_gdf['year'] = tile_index_gdf.Project.apply(lambda st: max(re.findall(r'\d+' ,st))).astype(int)
     latest_year = tile_index_gdf.year.astype(int).max()
     tiles_gdf_latest = tile_index_gdf[tile_index_gdf.year == latest_year]
@@ -65,48 +73,64 @@ def get_matching_urls(tile_index_fp, gdb, layer):
     matching_urls = tiles_gdf_latest.URL.to_list()
     print(f'Found {len(matching_urls)} Matching LAZ Files within Bounds for {latest_year}')
     print(f'PROJECT ID: {project_id}')
-    return matching_urls, project_id, latest_year
+    
+    return tiles_gdf_latest.URL.to_list(), project_id, latest_year
 
 
 ## Download LAZ Files 
-def download_laz_files(bucket_name, matching_urls, laz_dir):
+def download_laz_from_s3(s3_urls, laz_dir):
     ## Download Matching LAZ Files from NRCAN S3 Bucket
-    for url in matching_urls:
+    for s3_url in s3_urls:
         download_s3(
-            bucket_name = bucket_name,
-            url = url,
+            s3_url = s3_url,
             out_dir = laz_dir
         )
 
+import urllib.request
+import zipfile
+import os
+
+def retrieve_tile_index(out_dir):
+    if os.path.exists(out_dir) == False:
+            os.mkdir(out_dir)
+    url = 'https://canelevation-lidar-point-clouds.s3-ca-central-1.amazonaws.com/pointclouds_nuagespoints/Index_LiDARtiles_tuileslidar.zip'
+    filename = os.path.join(out_dir, 'file.zip')
+
+
+    urllib.request.urlretrieve(url, filename)
+    with zipfile.ZipFile(filename, 'r') as zip_ref:
+        zip_ref.extractall(out_dir)
+
+    os.remove(filename)
+
+
+# ## Download LAZ Files 
+# def pdal_download_s3(matching_urls, out_dir, wkt):
+#     ## Download Matching LAZ Files from NRCAN S3 Bucket
+#     pipeline_fp = os.path.join(out_dir ,'download.json')
+#     url1 = Path(matching_urls[0])
+#     print(f'DOWNLOADING FROM PATH: {url1.parent}')
+#     print('=============================================================')
+#     n = 1
+#     pipeline = list()
+#     for url in matching_urls:
+#         # print(url)
+#         url_path = Path(url)
+#         file_name = url.split('/')[-1].replace('.copc', '')
+#         out_fp = os.path.join(out_dir, file_name).replace('\\', '/')
+
+#         # arcpy.AddMessage(out_fp)
+#         pipeline.extend([{"type" : "readers.las", "filename" : url}])
         
+#     # pipeline.append({"type" : "filters.merge"})
+#     pipeline.append({"type" :"writers.las", "filename": out_fp})
 
-## Download LAZ Files 
-def pdal_download_s3(matching_urls, out_dir, wkt):
-    ## Download Matching LAZ Files from NRCAN S3 Bucket
-    pipeline_fp = os.path.join(out_dir ,'download.json')
-    url1 = Path(matching_urls[0])
-    print(f'DOWNLOADING FROM PATH: {url1.parent}')
-    print('=============================================================')
-    n = 1
-    pipeline = list()
-    for url in matching_urls:
-        # print(url)
-        url_path = Path(url)
-        file_name = url.split('/')[-1].replace('.copc', '')
-        out_fp = os.path.join(out_dir, file_name).replace('\\', '/')
+#     pipeline = dict(pipeline = pipeline)
+#     # print('DOWNLOADING NOW')
 
-        # arcpy.AddMessage(out_fp)
-        pipeline.extend([{"type" : "readers.las", "filename" : url}])
-        
-    # pipeline.append({"type" : "filters.merge"})
-    pipeline.append({"type" :"writers.las", "filename": out_fp})
+#     with open(pipeline_fp, 'w') as f:
+#         json.dump(pipeline, f)
+#     # subprocess.run(['pdal', 'pipeline', pipeline_fp])
 
-    pipeline = dict(pipeline = pipeline)
-    # print('DOWNLOADING NOW')
-
-    with open(pipeline_fp, 'w') as f:
-        json.dump(pipeline, f)
-    # subprocess.run(['pdal', 'pipeline', pipeline_fp])
-
-    pipeline = pdal.Pipeline(json.dumps(pipeline))
-    pipeline.execute()
+#     pipeline = pdal.Pipeline(json.dumps(pipeline))
+#     pipeline.execute()
